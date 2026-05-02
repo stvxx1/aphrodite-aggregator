@@ -20,37 +20,42 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 
-// Routes
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Aphrodite API is running' });
-});
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
-// Fetch videos (with optional duration filter and search text)
+// Fetch videos
 app.get('/api/videos', async (req, res) => {
   try {
-    const { minDuration = 5, query = '' } = req.query;
+    const { minDuration = 5, query = '', tag = '' } = req.query;
     const minDurationSecs = parseInt(minDuration) * 60;
     
     let sql = `
-      SELECT v.*, c.name as channel_name
+      SELECT DISTINCT v.*, c.name as channel_name
       FROM videos v
       LEFT JOIN channels c ON v.channel_id = c.id
+      LEFT JOIN video_tags vt ON vt.video_id = v.id
+      LEFT JOIN tags t ON t.id = vt.tag_id
       WHERE v.duration >= $1
     `;
     
     const params = [minDurationSecs];
+    let paramIndex = 2;
 
-    // If query exists, utilize GIN index for full text search
     if (query) {
-       sql += ` AND v.search_vector @@ plainto_tsquery('english', $2)`;
+       sql += ` AND v.search_vector @@ plainto_tsquery('english', $${paramIndex})`;
        params.push(query);
+       paramIndex++;
+    }
+
+    if (tag) {
+       sql += ` AND t.name ILIKE $${paramIndex}`;
+       params.push(`%${tag}%`);
+       paramIndex++;
     }
     
     sql += ` ORDER BY v.created_at DESC LIMIT 50`;
 
     const result = await pool.query(sql, params);
     
-    // Convert duration to minutes for frontend ease
     const formattedVideos = result.rows.map(v => ({
       ...v,
       durationMinutes: Math.floor(v.duration / 60)
@@ -63,17 +68,25 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
-app.get('/api/models', async (req, res) => {
+app.get('/api/tags', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM models ORDER BY name ASC');
+    // Get top 20 most used tags
+    const sql = `
+      SELECT t.name, COUNT(vt.video_id) as count
+      FROM tags t
+      JOIN video_tags vt ON t.id = vt.tag_id
+      GROUP BY t.name
+      ORDER BY count DESC
+      LIMIT 20
+    `;
+    const result = await pool.query(sql);
     res.json(result.rows);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to fetch models' });
+    res.status(500).json({ error: 'Failed to fetch tags' });
   }
 });
 
-// Start server
 app.listen(port, () => {
   console.log(`API server listening on port ${port}`);
 });
