@@ -22,37 +22,45 @@ app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
+let tagCache = null;
+let tagCacheTime = 0;
+
 // Fetch videos
 app.get('/api/videos', async (req, res) => {
   try {
-    const { minDuration = 5, query = '', tag = '' } = req.query;
+    const { minDuration = 5, query = '', tag = '', sort = 'new' } = req.query;
     const minDurationSecs = parseInt(minDuration) * 60;
     
     let sql = `
       SELECT DISTINCT v.*, c.name as channel_name
       FROM videos v
       LEFT JOIN channels c ON v.channel_id = c.id
-      LEFT JOIN video_tags vt ON vt.video_id = v.id
-      LEFT JOIN tags t ON t.id = vt.tag_id
-      WHERE v.duration >= $1
     `;
     
+    if (tag) {
+        sql += ` INNER JOIN video_tags vt ON vt.video_id = v.id INNER JOIN tags t ON t.id = vt.tag_id AND t.name = $2`;
+    }
+
+    sql += ` WHERE v.duration >= $1`;
+    
     const params = [minDurationSecs];
-    let paramIndex = 2;
+    let paramIndex = tag ? 3 : 2;
+
+    if (tag) {
+        params.push(tag);
+    }
 
     if (query) {
        sql += ` AND v.search_vector @@ plainto_tsquery('english', $${paramIndex})`;
        params.push(query);
        paramIndex++;
     }
-
-    if (tag) {
-       sql += ` AND t.name ILIKE $${paramIndex}`;
-       params.push(`%${tag}%`);
-       paramIndex++;
-    }
     
-    sql += ` ORDER BY v.created_at DESC LIMIT 50`;
+    if (sort === 'best') {
+        sql += ` ORDER BY v.duration DESC LIMIT 50`; // Mocking best by duration for now, since we don't have views stored cleanly yet
+    } else {
+        sql += ` ORDER BY v.created_at DESC LIMIT 50`;
+    }
 
     const result = await pool.query(sql, params);
     
@@ -70,7 +78,11 @@ app.get('/api/videos', async (req, res) => {
 
 app.get('/api/tags', async (req, res) => {
   try {
-    // Get top 20 most used tags
+    // 5 minute cache
+    if (tagCache && (Date.now() - tagCacheTime < 300000)) {
+        return res.json(tagCache);
+    }
+
     const sql = `
       SELECT t.name, COUNT(vt.video_id) as count
       FROM tags t
@@ -80,10 +92,23 @@ app.get('/api/tags', async (req, res) => {
       LIMIT 20
     `;
     const result = await pool.query(sql);
+    tagCache = result.rows;
+    tagCacheTime = Date.now();
+
     res.json(result.rows);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch tags' });
+  }
+});
+
+// Extra endpoints for routing tabs
+app.get('/api/channels', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM channels ORDER BY name ASC');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch channels' });
   }
 });
 
