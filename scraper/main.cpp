@@ -6,13 +6,15 @@
 #include <queue>
 #include <curl/curl.h>
 #include <chrono>
+#include <atomic>
 
 std::mutex queue_mutex;
 std::mutex log_mutex;
 std::queue<std::string> url_queue;
+std::atomic<int> failures{0};
 
 // Simulated write callback for curl
-size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
@@ -43,12 +45,17 @@ void ScrapeWorker(int worker_id) {
         // Spoof user agent and add reasonable timeouts to mimic human-like basic scraping
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36");
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        // Required when using timeouts from multiple threads (otherwise libcurl uses signals)
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
         CURLcode res = curl_easy_perform(curl);
         
         {
             std::lock_guard<std::mutex> lock(log_mutex);
             if (res != CURLE_OK) {
+                ++failures;
                 std::cerr << "Worker " << worker_id << " failed to scrape " << current_url << ": " << curl_easy_strerror(res) << std::endl;
             } else {
                 std::cout << "Worker " << worker_id << " successfully scraped " << current_url << " (Length: " << readBuffer.length() << ")" << std::endl;
@@ -96,5 +103,5 @@ int main() {
 
     std::cout << "Scraping complete." << std::endl;
     curl_global_cleanup();
-    return 0;
+    return failures == 0 ? 0 : 1;
 }

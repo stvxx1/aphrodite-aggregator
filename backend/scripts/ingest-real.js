@@ -1,16 +1,7 @@
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
 import fetch from 'node-fetch';
+import { createPool } from '../src/db.js';
 
-dotenv.config();
-
-const pool = new Pool({
-  user: process.env.DB_USER || 'u0_a403',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'aphrodite',
-  password: process.env.DB_PASSWORD || 'postgres',
-  port: process.env.DB_PORT || 5432,
-});
+const pool = createPool();
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -23,16 +14,17 @@ function parseDuration(durationVal) {
     if (typeof durationVal === 'string' && durationVal.includes(':')) {
         let secs = 0;
         const parts = durationVal.split(':').reverse();
-        for (let i = 0; i < parts.length; i++) secs += parseInt(parts[i]) * Math.pow(60, i);
+        for (let i = 0; i < parts.length; i++) secs += (parseInt(parts[i], 10) || 0) * Math.pow(60, i);
         return secs;
     }
-    return parseInt(durationVal) || 0;
+    return parseInt(durationVal, 10) || 0;
 }
 
 // Helper to insert tags
 async function processTags(videoId, tagNames) {
     if (!tagNames || tagNames.length === 0) return;
     for (const tagName of tagNames) {
+        if (typeof tagName !== 'string') continue;
         const cleanTag = tagName.trim().toLowerCase();
         if (!cleanTag) continue;
         const tagRes = await pool.query(`
@@ -50,9 +42,11 @@ async function processTags(videoId, tagNames) {
 async function fetchAPI(name, url, dataPathFunc) {
     console.log(`Fetching from ${name}: ${url}`);
     try {
-        const response = await fetch(url, { headers: HEADERS });
+        const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        return dataPathFunc(data) || [];
+        const items = dataPathFunc(data);
+        return Array.isArray(items) ? items : [];
     } catch (e) {
         console.error(`${name} fetch failed`, e.message);
         return [];
@@ -76,7 +70,7 @@ async function ingestData() {
 
         const channelNames = ['RedTube', 'Pornhub', 'Eporner', 'Tube8', 'Thumbzilla', 'YouPorn'];
         for (const name of channelNames) {
-            await pool.query(`INSERT INTO channels (name) VALUES ($1) ON CONFLICT DO NOTHING;`, [name]);
+            await pool.query(`INSERT INTO channels (name) VALUES ($1) ON CONFLICT (name) DO NOTHING;`, [name]);
         }
         const channels = await pool.query('SELECT id, name FROM channels');
         const channelMap = {};
@@ -96,24 +90,33 @@ async function ingestData() {
             for (const video of set.data) {
                 if (!video) continue;
                 
-                const title = (video.title || "Untitled").replace(/'/g, "''");
-                const embed = video.embed_url || video.embed || video.url || `https://example.com/embed/${video.id}`;
-                const thumbnail = video.default_thumb ? (video.default_thumb.src || video.default_thumb) : (video.thumb || '');
-                const durationSecs = parseDuration(video.duration || video.length_min || 0);
-                const views = video.views || 0;
+                try {
+                    // Parameterized query below handles escaping; don't pre-escape quotes.
+                    const title = String(video.title || "Untitled").slice(0, 500);
+                    const embed = video.embed_url || video.embed || video.url || (video.id != null ? `https://example.com/embed/${video.id}` : null);
+                    if (!embed) continue; // nothing to de-duplicate or play
+                    const thumbnail = video.default_thumb ? (video.default_thumb.src || video.default_thumb) : (video.thumb || '');
+                    const durationSecs = parseDuration(video.duration || video.length_min || 0);
+                    const views = video.views || 0;
 
-                const vRes = await pool.query(`
-                    INSERT INTO videos (title, description, video_url, preview_url, duration, channel_id) 
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    RETURNING id;
-                `, [title, `Views: ${views}`, embed, thumbnail, durationSecs, channelId]);
-                
-                if (vRes.rows.length > 0) {
-                    let tagNames = [];
-                    if (video.tags) tagNames = video.tags.map(t => t.tag_name || t);
-                    else if (video.keywords) tagNames = video.keywords.split(',');
-                    
-                    await processTags(vRes.rows[0].id, tagNames);
+                    // video_url is unique per channel, so re-running ingestion skips known videos.
+                    const vRes = await pool.query(`
+                        INSERT INTO videos (title, description, video_url, preview_url, duration, channel_id) 
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (channel_id, video_url) DO NOTHING
+                        RETURNING id;
+                    `, [title, `Views: ${views}`, embed, thumbnail, durationSecs, channelId]);
+
+                    if (vRes.rows.length > 0) {
+                        let tagNames = [];
+                        if (Array.isArray(video.tags)) tagNames = video.tags.map(t => t.tag_name || t);
+                        else if (typeof video.keywords === 'string') tagNames = video.keywords.split(',');
+
+                        await processTags(vRes.rows[0].id, tagNames);
+                    }
+                } catch (e) {
+                    // One bad record shouldn't abort the whole run.
+                    console.error(`Skipping ${set.source} video ${video.id ?? '?'}:`, e.message);
                 }
             }
         }
@@ -123,7 +126,7 @@ async function ingestData() {
     } catch (e) {
         console.error("Failed to ingest data:", e);
     } finally {
-        pool.end();
+        await pool.end();
     }
 }
 

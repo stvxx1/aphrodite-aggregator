@@ -1,28 +1,34 @@
-def parse_tags_from_text(title: str, description: str) -> list[str]:
+import re
+from typing import Optional
+
+
+def parse_tags_from_text(title: Optional[str], description: Optional[str]) -> list[str]:
     """
     Automated NLP (Natural Language Processing) routine to parse titles and descriptions
     into the specific tag cloud. If a video mentions specific keywords ("Step-Sister", "Extreme"),
     it pushes them directly into high-traffic silos.
     """
-    text = (title + " " + description).lower()
+    text = f"{title or ''} {description or ''}".lower()
     
     # Pre-defined tag dictionary and rules (mock spacy/NLP parsing)
+    # Keys are regexes matched on word boundaries, so "pov" doesn't fire inside "povera"
+    # and "step-sister" also catches "step sister" / "stepsister".
     keyword_map = {
-        "step-sister": ["POV", "Taboo", "Step-Sister"],
-        "extreme": ["Hardcore", "Extreme"],
-        "stockings": ["Fetish", "Stockings"],
-        "pov": ["POV"],
-        "milf": ["MILF", "Mature"]
+        r"step[- ]?sister": ["POV", "Taboo", "Step-Sister"],
+        r"extreme": ["Hardcore", "Extreme"],
+        r"stockings": ["Fetish", "Stockings"],
+        r"pov": ["POV"],
+        r"milf": ["MILF", "Mature"]
     }
     
     extracted_tags = set()
     
     for keyword, tags in keyword_map.items():
-        if keyword in text:
+        if re.search(rf"\b{keyword}\b", text):
             for tag in tags:
                 extracted_tags.add(tag)
                 
-    return list(extracted_tags)
+    return sorted(extracted_tags)  # deterministic order
 
 def recommend_videos(user_id: int, current_video_tags: list[str], user_history: list[dict], limit: int = 10) -> list[int]:
     """

@@ -1,23 +1,20 @@
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { createPool } from '../src/db.js';
 
-dotenv.config();
-
-const pool = new Pool({
-  user: process.env.DB_USER || 'u0_a403', // default termux user
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'aphrodite',
-  port: process.env.DB_PORT || 5432,
-});
+const pool = createPool();
 
 async function seed() {
+    // TRUNCATE ... CASCADE wipes everything, including ingested real data.
+    if (!process.argv.includes('--force')) {
+        console.error('Seeding TRUNCATES all tables. Re-run with --force to confirm.');
+        process.exitCode = 1;
+        await pool.end();
+        return;
+    }
     console.log("Beginning Database Content Seeding...");
 
     try {
         // Clear existing mock data if any
-        await pool.query('TRUNCATE TABLE video_tags, video_models, videos, tags, models, channels CASCADE');
+        await pool.query('TRUNCATE TABLE video_tags, video_models, videos, tags, models, channels RESTART IDENTITY CASCADE');
 
         // Insert Channels
         console.log("Seeding Channels...");
@@ -81,7 +78,7 @@ async function seed() {
                 INSERT INTO videos (title, description, video_url, preview_url, duration, channel_id) 
                 VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id;
-            `, [title, 'Auto-generated mock description for ' + title, 'mock_hls_stream.m3u8', '/mock-preview.jpg', duration, channelId]);
+            `, [title, 'Auto-generated mock description for ' + title, `mock_hls_stream_${i}.m3u8`, '/mock-preview.jpg', duration, channelId]);
             
             const vidId = vidRes.rows[0].id;
 
@@ -114,6 +111,7 @@ async function seed() {
         console.log("Seeding Completed Successfully!");
     } catch(e) {
         console.error("Error during seeding:", e);
+        process.exitCode = 1;
     } finally {
         await pool.end();
     }

@@ -56,10 +56,18 @@ CREATE TABLE IF NOT EXISTS video_tags (
     PRIMARY KEY (video_id, tag_id)
 );
 
--- GIN Indexes for fast search
-CREATE INDEX idx_videos_search_vector ON videos USING GIN(search_vector);
-CREATE INDEX idx_videos_duration ON videos (duration);
-CREATE INDEX idx_models_attributes ON models (hair_color, height, bust_size, ethnicity);
+-- Indexes (all idempotent so init-db can be re-run)
+CREATE INDEX IF NOT EXISTS idx_videos_search_vector ON videos USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_videos_duration ON videos (duration);
+CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_channel_id ON videos (channel_id);
+CREATE INDEX IF NOT EXISTS idx_video_tags_tag_id ON video_tags (tag_id);
+CREATE INDEX IF NOT EXISTS idx_video_models_model_id ON video_models (model_id);
+CREATE INDEX IF NOT EXISTS idx_models_attributes ON models (hair_color, height, bust_size, ethnicity);
+
+-- Ingestion relies on these for ON CONFLICT DO NOTHING de-duplication
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_name ON channels (name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_channel_url ON videos (channel_id, video_url);
 
 -- Trigger to update search vector automatically
 CREATE OR REPLACE FUNCTION videos_search_vector_update() RETURNS trigger AS $$
@@ -71,6 +79,7 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_videos_search_vector ON videos;
 CREATE TRIGGER trigger_videos_search_vector
   BEFORE INSERT OR UPDATE
   ON videos

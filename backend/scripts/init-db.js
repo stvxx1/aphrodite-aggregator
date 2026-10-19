@@ -1,21 +1,12 @@
-import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import { createPool } from '../src/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'aphrodite',
-  password: process.env.DB_PASSWORD || 'postgres',
-  port: process.env.DB_PORT || 5432,
-});
+const pool = createPool();
 
 async function initDB() {
   console.log('Initializing database...');
@@ -27,6 +18,7 @@ async function initDB() {
     console.log('Database schema created successfully.');
   } catch (error) {
     console.error('Error initializing database:', error);
+    process.exitCode = 1;
   } finally {
     await pool.end();
   }
